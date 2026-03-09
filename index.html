@@ -261,6 +261,121 @@
       box-shadow:0 4px 16px rgba(0,0,0,.5);white-space:nowrap;
     }
     #toast.show{ opacity:1;transform:translateX(-50%) translateY(0); }
+
+    /* ══════════════════════════════════
+       MOBILE STYLES (max-width: 768px)
+    ══════════════════════════════════ */
+    @media (max-width: 768px) {
+      body { overflow: hidden; }
+
+      /* ── 로그인 박스 모바일 ── */
+      .login-box {
+        width: 100%;
+        max-width: 100%;
+        min-height: 100vh;
+        border-radius: 0;
+        padding: 24px 20px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+      }
+      #login-screen {
+        align-items: flex-start;
+      }
+      .av-section {
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+      }
+      .av-preview {
+        width: 80px; height: 80px; font-size: 36px;
+      }
+      .fl { width: 100%; }
+      .av-grid { justify-content: center; }
+      .av-opt { width: 38px; height: 38px; font-size: 18px; }
+      .dc-input { font-size: 16px; padding: 12px 14px; } /* 16px prevents iOS zoom */
+      .btn-join { padding: 14px; font-size: 16px; }
+      .login-title { font-size: 20px; }
+
+      /* ── 앱 레이아웃 ── */
+      #app { position: relative; overflow: hidden; }
+
+      /* 사이드바: 기본 숨김, 슬라이드 인 */
+      .sidebar {
+        position: fixed;
+        left: 0; top: 0; bottom: 0;
+        z-index: 100;
+        width: 280px;
+        transform: translateX(-100%);
+        transition: transform .25s cubic-bezier(.4,0,.2,1);
+        box-shadow: 4px 0 24px rgba(0,0,0,.5);
+      }
+      .sidebar.open {
+        transform: translateX(0);
+      }
+
+      /* 사이드바 열릴 때 배경 오버레이 */
+      #sidebar-overlay {
+        display: none;
+        position: fixed; inset: 0;
+        background: rgba(0,0,0,.5);
+        z-index: 99;
+      }
+      #sidebar-overlay.show { display: block; }
+
+      /* 메인 영역 풀 너비 */
+      .main { width: 100%; }
+
+      /* 채널 헤더에 햄버거 버튼 표시 */
+      .ch-hdr { padding: 0 12px; gap: 8px; }
+      #mobile-menu-btn {
+        display: flex;
+        align-items: center; justify-content: center;
+        background: none; border: none; color: var(--muted);
+        font-size: 20px; cursor: pointer; padding: 4px; flex-shrink: 0;
+        transition: color .15s;
+      }
+      #mobile-menu-btn:hover { color: var(--text); }
+      .ch-hdr-desc { display: none; } /* 공간 절약 */
+
+      /* 메시지 영역 */
+      .msg-group { padding: 1px 10px; gap: 10px; }
+      .msg-group.new-sender { padding-top: 12px; }
+      .msg-av { width: 36px; height: 36px; font-size: 18px; }
+      .msg-av-col { width: 36px; }
+      .msg-content { font-size: 14px; }
+      .msg-name { font-size: 14px; }
+      .sys-msg { padding: 4px 10px; }
+
+      /* 입력창 */
+      .input-bar { padding: 0 10px 12px; }
+      #msg-input { font-size: 16px; } /* iOS zoom 방지 */
+      .input-wrap { border-radius: 24px; padding: 0 8px 0 14px; }
+      .send-btn { font-size: 22px; padding: 10px 6px; }
+
+      /* 팝오버 모바일: 중앙 bottom sheet 스타일 */
+      .popover {
+        width: 100% !important;
+        left: 0 !important;
+        right: 0;
+        bottom: 0 !important;
+        top: auto !important;
+        border-radius: 16px 16px 0 0;
+        max-height: 60vh;
+        overflow-y: auto;
+      }
+
+      /* 멤버 목록 내 아이템 */
+      .mb-row { padding: 8px 14px; }
+      .sb-header { padding: 0 14px; }
+      .mp-title { padding: 14px 14px 8px; }
+
+      /* 토스트 위치 조정 */
+      #toast { bottom: 16px; font-size: 12px; padding: 8px 14px; white-space: normal; max-width: 85%; text-align: center; }
+    }
+
+    /* 데스크탑에서 햄버거 버튼 숨기기 */
+    #mobile-menu-btn { display: none; }
   </style>
 </head>
 <body>
@@ -307,8 +422,11 @@
 <!-- ══ APP ══ -->
 <div id="app">
 
+  <!-- 모바일 사이드바 오버레이 -->
+  <div id="sidebar-overlay" onclick="closeSidebar()"></div>
+
   <!-- Sidebar: 멤버 목록만 -->
-  <div class="sidebar">
+  <div class="sidebar" id="sidebar">
     <div class="sb-header">
       <span id="room-label">SecureChat</span>
       <div class="enc-chip" style="font-size:10px;padding:2px 8px;">🔒 E2E</div>
@@ -331,6 +449,7 @@
   <div class="main">
     <!-- 채널 헤더 -->
     <div class="ch-hdr">
+      <button id="mobile-menu-btn" onclick="openSidebar()" title="멤버 목록">☰</button>
       <span style="font-size:20px;color:var(--muted)">#</span>
       <span class="ch-hdr-name" id="chan-name-hdr">general</span>
       <div class="ch-hdr-div"></div>
@@ -768,6 +887,35 @@ document.addEventListener('DOMContentLoaded', () => {
 setInterval(() => {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type:'ping' }));
 }, 30000);
+
+// ═══════════════════════════════════
+//  MOBILE SIDEBAR TOGGLE
+// ═══════════════════════════════════
+function openSidebar() {
+  document.getElementById('sidebar').classList.add('open');
+  document.getElementById('sidebar-overlay').classList.add('show');
+  document.body.style.overflow = 'hidden';
+}
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('show');
+  document.body.style.overflow = '';
+}
+// 멤버 클릭 시 모바일에서 사이드바 닫기
+document.addEventListener('DOMContentLoaded', () => {
+  // 멤버 목록 클릭하면 팝오버 보여주고 사이드바 닫기 (모바일)
+  document.getElementById('mb-list').addEventListener('click', () => {
+    if (window.innerWidth <= 768) {
+      setTimeout(closeSidebar, 150);
+    }
+  });
+  // 팝오버 모바일에서 화면 탭하면 닫기
+  document.addEventListener('click', e => {
+    if (window.innerWidth <= 768 && !e.target.closest('.popover,.mb-row,.msg-av,.msg-name')) {
+      document.getElementById('popover').style.display = 'none';
+    }
+  });
+});
 </script>
 </body>
 </html>
