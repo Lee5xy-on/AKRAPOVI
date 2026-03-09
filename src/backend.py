@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 종단간 암호화 채팅 서버
-- IP당 계정 1개 제한
 - 중복 닉네임 방지
 - 메시지 200자 제한
 """
@@ -19,63 +18,13 @@ from websockets.server import WebSocketServerProtocol
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# { room_id: { websocket: { username, public_key, ip, profile, joined_at } } }
+# { room_id: { websocket: { username, public_key, profile, joined_at } } }
 rooms: Dict[str, Dict] = {}
-
-# IP → username 전역 매핑 (같은 IP는 한 계정만)
-ip_to_username: Dict[str, str] = {}
-
-# username → IP 역매핑
-username_to_ip: Dict[str, str] = {}
 
 MAX_MSG_LEN = 200
 
 
-def get_client_ip(websocket: WebSocketServerProtocol) -> str:
-    """
-    클라이언트 실제 IP 추출.
-    Render(및 대부분의 클라우드 호스팅)는 내부 프록시를 거치므로
-    remote_address가 항상 127.0.0.1이 된다.
-    실제 IP는 X-Forwarded-For 헤더에 담겨 있음.
-    """
-    try:
-        headers = dict(websocket.request_headers)
-    except Exception:
-        headers = {}
-
-    # X-Forwarded-For: client, proxy1, proxy2 형태 → 첫 번째 값이 실제 클라이언트 IP
-    for key in ('X-Forwarded-For', 'x-forwarded-for'):
-        value = headers.get(key, '').strip()
-        if value:
-            real_ip = value.split(',')[0].strip()
-            if real_ip and real_ip not in ('unknown', ''):
-                logger.debug(f"X-Forwarded-For IP: {real_ip}")
-                return real_ip
-
-    # X-Real-IP (nginx 등 일부 프록시)
-    for key in ('X-Real-IP', 'x-real-ip'):
-        value = headers.get(key, '').strip()
-        if value:
-            logger.debug(f"X-Real-IP: {value}")
-            return value
-
-    # 직접 연결 (로컬 개발 환경)
-    remote = websocket.remote_address
-    if remote:
-        return remote[0]
-
-    return '0.0.0.0'
-
-
-def get_room_usernames(room_id: str) -> set:
-    """방의 모든 닉네임 집합 반환"""
-    if room_id not in rooms:
-        return set()
-    return {info['username'] for info in rooms[room_id].values()}
-
-
 def get_all_usernames() -> set:
-    """전체 서버에서 사용 중인 닉네임 집합"""
     names = set()
     for room in rooms.values():
         for info in room.values():
@@ -84,7 +33,6 @@ def get_all_usernames() -> set:
 
 
 async def send_error(websocket: WebSocketServerProtocol, code: str, message: str):
-    """에러 메시지 전송 후 연결 종료"""
     await websocket.send(json.dumps({
         "type": "error",
         "code": code,
@@ -99,39 +47,19 @@ async def register_client(
     username: str,
     public_key: str,
     profile: dict,
-    client_ip: str
 ) -> bool:
-    """
-    클라이언트 등록.
-    반환값: True = 성공, False = 거부됨
-    """
 
-    # ── 1. IP 중복 체크 ──────────────────────────────
-    if client_ip in ip_to_username:
-        existing_name = ip_to_username[client_ip]
-        if existing_name != username:
-            logger.warning(f"IP {client_ip} 이미 '{existing_name}'으로 접속 중 → '{username}' 거부")
-            await send_error(
-                websocket,
-                "IP_ALREADY_REGISTERED",
-                f"이 IP는 이미 '{existing_name}' 계정으로 접속 중입니다. 한 IP당 하나의 계정만 허용됩니다."
-            )
-            return False
+    # ── 닉네임 중복 체크 ──────────────────────────────
+    if username in get_all_usernames():
+        logger.warning(f"닉네임 중복: '{username}' 거부")
+        await send_error(
+            websocket,
+            "USERNAME_TAKEN",
+            f"'{username}' 닉네임은 이미 사용 중입니다. 다른 닉네임을 선택해주세요."
+        )
+        return False
 
-    # ── 2. 닉네임 중복 체크 (전체 서버) ─────────────
-    all_names = get_all_usernames()
-    if username in all_names:
-        # 같은 IP의 재접속이면 허용 (재연결 시나리오)
-        if ip_to_username.get(client_ip) != username:
-            logger.warning(f"닉네임 중복: '{username}' 거부 (IP: {client_ip})")
-            await send_error(
-                websocket,
-                "USERNAME_TAKEN",
-                f"'{username}' 닉네임은 이미 사용 중입니다. 다른 닉네임을 선택해주세요."
-            )
-            return False
-
-    # ── 3. 방 생성 & 등록 ───────────────────────────
+    # ── 방 생성 & 등록 ───────────────────────────────
     if room_id not in rooms:
         rooms[room_id] = {}
 
@@ -139,15 +67,12 @@ async def register_client(
         "username":   username,
         "public_key": public_key,
         "profile":    profile,
-        "ip":         client_ip,
         "joined_at":  datetime.now().isoformat()
     }
-    ip_to_username[client_ip] = username
-    username_to_ip[username]  = client_ip
 
-    logger.info(f"[{room_id}] ✅ '{username}' 입장 (IP: {client_ip}, 총 {len(rooms[room_id])}명)")
+    logger.info(f"[{room_id}] ✅ '{username}' 입장 (총 {len(rooms[room_id])}명)")
 
-    # ── 4. 기존 사용자 목록 전송 ─────────────────────
+    # ── 기존 사용자 목록 전송 ─────────────────────────
     existing_users = []
     for ws, info in rooms[room_id].items():
         if ws != websocket:
@@ -163,7 +88,7 @@ async def register_client(
         "existing_users": existing_users
     }))
 
-    # ── 5. 다른 사용자에게 입장 알림 ─────────────────
+    # ── 다른 사용자에게 입장 알림 ─────────────────────
     await broadcast(room_id, json.dumps({
         "type":       "user_joined",
         "username":   username,
@@ -176,19 +101,13 @@ async def register_client(
 
 
 async def unregister_client(websocket: WebSocketServerProtocol, room_id: str):
-    """클라이언트 등록 해제"""
     if room_id not in rooms or websocket not in rooms[room_id]:
         return
 
-    info      = rooms[room_id][websocket]
-    username  = info["username"]
-    client_ip = info["ip"]
+    info     = rooms[room_id][websocket]
+    username = info["username"]
 
     del rooms[room_id][websocket]
-
-    # IP / 이름 매핑 해제
-    ip_to_username.pop(client_ip, None)
-    username_to_ip.pop(username, None)
 
     if not rooms[room_id]:
         del rooms[room_id]
@@ -203,7 +122,6 @@ async def unregister_client(websocket: WebSocketServerProtocol, room_id: str):
 
 
 async def broadcast(room_id: str, message: str, exclude: WebSocketServerProtocol = None):
-    """방의 모든 클라이언트에게 메시지 전송"""
     if room_id not in rooms:
         return
     disconnected = []
@@ -219,12 +137,10 @@ async def broadcast(room_id: str, message: str, exclude: WebSocketServerProtocol
 
 
 async def handle_client(websocket: WebSocketServerProtocol):
-    """클라이언트 연결 핸들러"""
-    room_id:   Optional[str] = None
-    username:  Optional[str] = None
-    client_ip = get_client_ip(websocket)
+    room_id:  Optional[str] = None
+    username: Optional[str] = None
 
-    logger.info(f"새 연결: {client_ip}")
+    logger.info(f"새 연결: {websocket.remote_address}")
 
     try:
         async for raw_message in websocket:
@@ -243,9 +159,7 @@ async def handle_client(websocket: WebSocketServerProtocol):
                         await send_error(websocket, "INVALID_USERNAME", "닉네임을 입력해주세요.")
                         return
 
-                    ok = await register_client(
-                        websocket, req_room, req_name, pub_key, profile, client_ip
-                    )
+                    ok = await register_client(websocket, req_room, req_name, pub_key, profile)
                     if ok:
                         room_id  = req_room
                         username = req_name
@@ -255,12 +169,7 @@ async def handle_client(websocket: WebSocketServerProtocol):
                     if not (room_id and username):
                         continue
 
-                    encrypted = data.get("encrypted_messages", {})
-
-                    # 서버 측 200자 제한: 암호화 전 평문을 알 수 없으므로
-                    # 페이로드 크기로 간접 제한 (200자 UTF-8 암호화는 약 5KB 이하)
-                    raw_size = len(raw_message)
-                    if raw_size > 32_768:   # 32KB 초과 시 거부
+                    if len(raw_message) > 32_768:
                         await websocket.send(json.dumps({
                             "type":    "error",
                             "code":    "MSG_TOO_LONG",
@@ -271,7 +180,7 @@ async def handle_client(websocket: WebSocketServerProtocol):
                     await broadcast(room_id, json.dumps({
                         "type":               "message",
                         "from":               username,
-                        "encrypted_messages": encrypted,
+                        "encrypted_messages": data.get("encrypted_messages", {}),
                         "timestamp":          datetime.now().isoformat(),
                         "msg_id":             str(uuid.uuid4())
                     }))
@@ -281,11 +190,11 @@ async def handle_client(websocket: WebSocketServerProtocol):
                     await websocket.send(json.dumps({"type": "pong"}))
 
             except json.JSONDecodeError:
-                logger.warning(f"잘못된 JSON (IP: {client_ip})")
+                logger.warning("잘못된 JSON")
                 await websocket.send(json.dumps({"type": "error", "code": "BAD_JSON", "message": "Invalid JSON"}))
 
     except websockets.exceptions.ConnectionClosed:
-        logger.info(f"연결 종료: {username or '?'} ({client_ip})")
+        logger.info(f"연결 종료: {username or '?'}")
     finally:
         if room_id:
             await unregister_client(websocket, room_id)
@@ -297,16 +206,10 @@ async def main():
 
     logger.info("🔐 종단간 암호화 채팅 서버 시작")
     logger.info(f"📡 WebSocket: ws://{host}:{port}")
-    logger.info("🚫 IP당 1계정 / 중복 닉네임 / 200자 제한 적용")
+    logger.info("🚫 중복 닉네임 / 200자 제한 적용")
     logger.info("⚠️  서버는 암호화된 데이터만 중계합니다")
 
-    async with websockets.serve(
-        handle_client,
-        host,
-        port,
-        # Render의 프록시가 WebSocket 헤더를 전달하도록
-        # process_request 없이 기본 핸들러 사용
-    ):
+    async with websockets.serve(handle_client, host, port):
         await asyncio.Future()
 
 
