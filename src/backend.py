@@ -270,7 +270,7 @@ async def handle_client(websocket: WebSocketServerProtocol):
 
 async def main():
     host = "0.0.0.0"
-    port = 8765
+    port = int(os.environ.get("PORT", 8765))
 
     logger.info("🔐 종단간 암호화 채팅 서버 시작")
     logger.info(f"📡 WebSocket: ws://{host}:{port}")
