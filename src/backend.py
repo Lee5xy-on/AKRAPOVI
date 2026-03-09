@@ -32,16 +32,38 @@ MAX_MSG_LEN = 200
 
 
 def get_client_ip(websocket: WebSocketServerProtocol) -> str:
-    """클라이언트 IP 추출 (프록시 헤더 우선)"""
-    # X-Forwarded-For 헤더가 있으면 사용 (nginx/프록시 뒤에 있을 경우)
-    headers = getattr(websocket, 'request_headers', {})
-    forwarded = headers.get('X-Forwarded-For') or headers.get('x-forwarded-for')
-    if forwarded:
-        return forwarded.split(',')[0].strip()
-    # 직접 연결
+    """
+    클라이언트 실제 IP 추출.
+    Render(및 대부분의 클라우드 호스팅)는 내부 프록시를 거치므로
+    remote_address가 항상 127.0.0.1이 된다.
+    실제 IP는 X-Forwarded-For 헤더에 담겨 있음.
+    """
+    try:
+        headers = dict(websocket.request_headers)
+    except Exception:
+        headers = {}
+
+    # X-Forwarded-For: client, proxy1, proxy2 형태 → 첫 번째 값이 실제 클라이언트 IP
+    for key in ('X-Forwarded-For', 'x-forwarded-for'):
+        value = headers.get(key, '').strip()
+        if value:
+            real_ip = value.split(',')[0].strip()
+            if real_ip and real_ip not in ('unknown', ''):
+                logger.debug(f"X-Forwarded-For IP: {real_ip}")
+                return real_ip
+
+    # X-Real-IP (nginx 등 일부 프록시)
+    for key in ('X-Real-IP', 'x-real-ip'):
+        value = headers.get(key, '').strip()
+        if value:
+            logger.debug(f"X-Real-IP: {value}")
+            return value
+
+    # 직접 연결 (로컬 개발 환경)
     remote = websocket.remote_address
     if remote:
         return remote[0]
+
     return '0.0.0.0'
 
 
@@ -158,8 +180,8 @@ async def unregister_client(websocket: WebSocketServerProtocol, room_id: str):
     if room_id not in rooms or websocket not in rooms[room_id]:
         return
 
-    info     = rooms[room_id][websocket]
-    username = info["username"]
+    info      = rooms[room_id][websocket]
+    username  = info["username"]
     client_ip = info["ip"]
 
     del rooms[room_id][websocket]
@@ -198,8 +220,8 @@ async def broadcast(room_id: str, message: str, exclude: WebSocketServerProtocol
 
 async def handle_client(websocket: WebSocketServerProtocol):
     """클라이언트 연결 핸들러"""
-    room_id:  Optional[str] = None
-    username: Optional[str] = None
+    room_id:   Optional[str] = None
+    username:  Optional[str] = None
     client_ip = get_client_ip(websocket)
 
     logger.info(f"새 연결: {client_ip}")
@@ -278,7 +300,13 @@ async def main():
     logger.info("🚫 IP당 1계정 / 중복 닉네임 / 200자 제한 적용")
     logger.info("⚠️  서버는 암호화된 데이터만 중계합니다")
 
-    async with websockets.serve(handle_client, host, port):
+    async with websockets.serve(
+        handle_client,
+        host,
+        port,
+        # Render의 프록시가 WebSocket 헤더를 전달하도록
+        # process_request 없이 기본 핸들러 사용
+    ):
         await asyncio.Future()
 
 
